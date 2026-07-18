@@ -25,7 +25,7 @@ jobs:
         terraform_version: 1.7.5
         terraform_wrapper: false
     - name: Terraform Init
-      run: "terraform init -input=false -reconfigure \\\n  -backend-config=\"bucket=${{\
+      run: "terraform init -reconfigure -input=false -reconfigure \\\n  -backend-config=\"bucket=${{\
         \ secrets.TF_STATE_BUCKET }}\" \\\n  -backend-config=\"key=${{ secrets.PROJECT_NAME\
         \ }}/terraform.tfstate\" \\\n  -backend-config=\"region=us-east-1\"\n"
       working-directory: infra

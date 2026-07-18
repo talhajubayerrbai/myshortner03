@@ -24,18 +24,24 @@ jobs:
         terraform_version: 1.7.5
         terraform_wrapper: false
     - name: Terraform Init
-      run: "terraform init -reconfigure -input=false -reconfigure \\\n  -backend-config=\"bucket=${{\
+      run: "terraform init -input=false -reconfigure \\\n  -backend-config=\"bucket=${{\
         \ secrets.TF_STATE_BUCKET }}\" \\\n  -backend-config=\"key=${{ secrets.PROJECT_NAME\
         \ }}/terraform.tfstate\" \\\n  -backend-config=\"region=us-east-1\"\n"
       working-directory: infra
     - name: Reconcile RDS SG state
-      run: "if terraform state show aws_security_group.rds > /dev/null 2>&1; then\n\
-        \  echo \"Removing stale aws_security_group.rds from state...\"\n  terraform\
-        \ state rm aws_security_group.rds\n  echo \"Re-importing real RDS SG sg-017966ea6d8496082...\"\
+      run: "set -e\n# If the RDS SG is in state but flagged dirty, remove and re-import\n\
+        # so Terraform sees it as-is and makes zero changes to it.\nif terraform state\
+        \ show aws_security_group.rds > /dev/null 2>&1; then\n  echo \"RDS SG found\
+        \ in state \u2014 removing stale entry...\"\n  terraform state rm aws_security_group.rds\n\
+        \  echo \"Re-importing sg-017966ea6d8496082 so Terraform reconciles in-place...\"\
         \n  terraform import -input=false aws_security_group.rds sg-017966ea6d8496082\n\
-        else\n  echo \"aws_security_group.rds not in state or already clean, skipping.\"\
-        \nfi\n"
+        \  echo \"Import complete.\"\nelse\n  echo \"aws_security_group.rds not in\
+        \ state \u2014 will be created fresh by apply.\"\nfi\n"
       working-directory: infra
+      env:
+        TF_VAR_project_name: ${{ secrets.PROJECT_NAME }}
+        TF_VAR_ssh_public_key: ${{ secrets.SSH_PUBLIC_KEY }}
+        TF_VAR_db_password: ${{ secrets.DB_PASSWORD }}
     - name: Terraform Apply
       run: terraform apply -input=false -auto-approve
       working-directory: infra
@@ -67,15 +73,10 @@ jobs:
         name: tf-outputs
         path: /tmp
     - name: Write SSH Key
-      run: 'mkdir -p ~/.ssh
-
-        printf ''%s'' "$SSH_KEY" | sed ''s/\\n/\n/g'' > ~/.ssh/deploy_key
-
-        echo "" >> ~/.ssh/deploy_key
-
-        chmod 600 ~/.ssh/deploy_key
-
-        '
+      run: "mkdir -p ~/.ssh\npython3 - <<'PYEOF'\nimport os, pathlib\nkey = os.environ[\"\
+        SSH_KEY\"].replace(\"\\\\n\", \"\\n\")\nif not key.endswith(\"\\n\"):\n  \
+        \  key += \"\\n\"\npathlib.Path(os.path.expanduser(\"~/.ssh/deploy_key\")).write_text(key)\n\
+        PYEOF\nchmod 600 ~/.ssh/deploy_key\n"
       env:
         SSH_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
     - name: Diagnose SSH key

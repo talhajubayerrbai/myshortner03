@@ -24,12 +24,12 @@ jobs:
         terraform_version: 1.7.5
         terraform_wrapper: false
     - name: Terraform Init
-      run: "terraform init -reconfigure -input=false -reconfigure \\\n  -backend-config=\"bucket=${{\
+      run: "terraform init -input=false -reconfigure \\\n  -backend-config=\"bucket=${{\
         \ secrets.TF_STATE_BUCKET }}\" \\\n  -backend-config=\"key=${{ secrets.PROJECT_NAME\
         \ }}/terraform.tfstate\" \\\n  -backend-config=\"region=us-east-1\"\n"
       working-directory: infra
-    - name: Replace EC2 instance to reseed SSH key
-      run: terraform apply -input=false -auto-approve -replace=aws_instance.app -replace=aws_eip.app
+    - name: Terraform Apply
+      run: terraform apply -input=false -auto-approve -replace=aws_key_pair.app
       working-directory: infra
     - id: tf_outputs
       name: Export Outputs
@@ -59,12 +59,19 @@ jobs:
         name: tf-outputs
         path: /tmp
     - name: Write SSH Key
-      run: "mkdir -p ~/.ssh\npython3 -c \"\nimport os, sys\nkey = os.environ['SSH_KEY'].replace('\\\
+      run: "mkdir -p ~/.ssh\npython3 -c \"\nimport os\nkey = os.environ['SSH_KEY'].replace('\\\
         \\n', '\\n')\nif not key.endswith('\\n'):\n    key += '\\n'\nopen(os.path.expanduser('~/.ssh/deploy_key'),\
-        \ 'w').write(key)\n\"\nchmod 600 ~/.ssh/deploy_key\nssh-keyscan -H \"${{ needs.provision.outputs.instance_ip\
-        \ }}\" >> ~/.ssh/known_hosts\n"
+        \ 'w').write(key)\n\"\nchmod 600 ~/.ssh/deploy_key\n"
       env:
         SSH_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+    - name: Wait for SSH
+      run: 'echo "Waiting 40s for instance to boot and sshd to start..."
+
+        sleep 40
+
+        ssh-keyscan -H "${{ needs.provision.outputs.instance_ip }}" >> ~/.ssh/known_hosts
+
+        '
     - name: Generate Inventory
       run: 'cat > ansible/inventory.ini <<EOF
 

@@ -25,14 +25,14 @@ stages:
 
       - name: Terraform Init
         run: |
-          terraform init -reconfigure -input=false -reconfigure \
+          terraform init -input=false -reconfigure \
             -backend-config="bucket=${{ secrets.TF_STATE_BUCKET }}" \
             -backend-config="key=${{ secrets.PROJECT_NAME }}/terraform.tfstate" \
             -backend-config="region=us-east-1"
         working-directory: infra
 
-      - name: Replace EC2 instance to reseed SSH key
-        run: terraform apply -input=false -auto-approve -replace=aws_instance.app -replace=aws_eip.app
+      - name: Terraform Apply
+        run: terraform apply -input=false -auto-approve -replace=aws_key_pair.app
         working-directory: infra
 
       - name: Export Outputs
@@ -68,13 +68,18 @@ stages:
         run: |
           mkdir -p ~/.ssh
           python3 -c "
-          import os, sys
+          import os
           key = os.environ['SSH_KEY'].replace('\\n', '\n')
           if not key.endswith('\n'):
               key += '\n'
           open(os.path.expanduser('~/.ssh/deploy_key'), 'w').write(key)
           "
           chmod 600 ~/.ssh/deploy_key
+
+      - name: Wait for SSH
+        run: |
+          echo "Waiting 40s for instance to boot and sshd to start..."
+          sleep 40
           ssh-keyscan -H "${{ needs.provision.outputs.instance_ip }}" >> ~/.ssh/known_hosts
 
       - name: Generate Inventory

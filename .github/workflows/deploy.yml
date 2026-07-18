@@ -24,12 +24,12 @@ jobs:
         terraform_version: 1.7.5
         terraform_wrapper: false
     - name: Terraform Init
-      run: "terraform init -reconfigure -input=false -reconfigure \\\n  -backend-config=\"bucket=${{\
+      run: "terraform init -input=false -reconfigure \\\n  -backend-config=\"bucket=${{\
         \ secrets.TF_STATE_BUCKET }}\" \\\n  -backend-config=\"key=${{ secrets.PROJECT_NAME\
         \ }}/terraform.tfstate\" \\\n  -backend-config=\"region=us-east-1\"\n"
       working-directory: infra
-    - name: Terraform Apply
-      run: terraform apply -input=false -auto-approve
+    - name: Replace EC2 instance to reseed SSH key
+      run: terraform apply -input=false -auto-approve -replace=aws_instance.app -replace=aws_eip.app
       working-directory: infra
     - id: tf_outputs
       name: Export Outputs

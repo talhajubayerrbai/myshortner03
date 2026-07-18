@@ -25,9 +25,7 @@ data "aws_ami" "amazon_linux" {
   }
 }
 
-# Look up the existing RDS SG by name — do NOT manage it as a resource.
-# It was created in an earlier run and is attached to the live RDS instance;
-# converting it to a data source makes Terraform read-only so it is never destroyed.
+# Look up the existing RDS SG by name -- Terraform read-only, never destroyed.
 data "aws_security_group" "rds" {
   filter {
     name   = "group-name"
@@ -40,13 +38,12 @@ data "aws_security_group" "rds" {
 }
 
 # -- SSH Key Pair --------------------------------------------------------------
+# NO ignore_changes on public_key: if SSH_PUBLIC_KEY rotates, Terraform must
+# replace the key pair (and cascade to the EC2 instance) so the new instance
+# is seeded with the current public key at launch.
 resource "aws_key_pair" "app" {
   key_name   = "${var.project_name}-key"
   public_key = var.ssh_public_key
-
-  lifecycle {
-    ignore_changes = [public_key]
-  }
 
   tags = {
     Project   = var.project_name

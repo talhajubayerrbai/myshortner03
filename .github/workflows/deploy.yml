@@ -24,14 +24,18 @@ jobs:
         terraform_version: 1.7.5
         terraform_wrapper: false
     - name: Terraform Init
-      run: "terraform init -reconfigure -input=false -reconfigure \\\n  -backend-config=\"bucket=${{\
+      run: "terraform init -input=false -reconfigure \\\n  -backend-config=\"bucket=${{\
         \ secrets.TF_STATE_BUCKET }}\" \\\n  -backend-config=\"key=${{ secrets.PROJECT_NAME\
         \ }}/terraform.tfstate\" \\\n  -backend-config=\"region=us-east-1\"\n"
       working-directory: infra
     - name: Drop stale RDS SG resource from state
-      run: "# Remove the old managed resource entry if present \u2014 it is now a\
-        \ data source.\n# This is a no-op if the entry is already gone.\nterraform\
-        \ state rm aws_security_group.rds 2>/dev/null || true\n"
+      run: '# aws_security_group.rds is now a data source; remove managed resource
+
+        # entry from state if a previous run left it there. No-op if absent.
+
+        terraform state rm aws_security_group.rds 2>/dev/null || true
+
+        '
       working-directory: infra
     - name: Terraform Apply
       run: terraform apply -input=false -auto-approve
@@ -70,18 +74,6 @@ jobs:
         PYEOF\nchmod 600 ~/.ssh/deploy_key\n"
       env:
         SSH_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
-    - name: Diagnose SSH key
-      run: 'echo "=== Derived public key from private ==="
-
-        ssh-keygen -y -f ~/.ssh/deploy_key || echo "FAILED: private key is malformed"
-
-        echo "=== Expected (first 60 chars) ==="
-
-        echo "$SSH_PUBLIC_KEY" | cut -c1-60
-
-        '
-      env:
-        SSH_PUBLIC_KEY: ${{ secrets.SSH_PUBLIC_KEY }}
     - name: Wait for SSH
       run: 'HOST="${{ needs.provision.outputs.instance_ip }}"
 

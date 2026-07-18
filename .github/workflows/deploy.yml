@@ -24,9 +24,17 @@ jobs:
         terraform_version: 1.7.5
         terraform_wrapper: false
     - name: Terraform Init
-      run: "terraform init -reconfigure -input=false -reconfigure \\\n  -backend-config=\"bucket=${{\
+      run: "terraform init -input=false -reconfigure \\\n  -backend-config=\"bucket=${{\
         \ secrets.TF_STATE_BUCKET }}\" \\\n  -backend-config=\"key=${{ secrets.PROJECT_NAME\
         \ }}/terraform.tfstate\" \\\n  -backend-config=\"region=us-east-1\"\n"
+      working-directory: infra
+    - name: Reconcile RDS SG state
+      run: "if terraform state show aws_security_group.rds > /dev/null 2>&1; then\n\
+        \  echo \"Removing stale aws_security_group.rds from state...\"\n  terraform\
+        \ state rm aws_security_group.rds\n  echo \"Re-importing real RDS SG sg-017966ea6d8496082...\"\
+        \n  terraform import -input=false aws_security_group.rds sg-017966ea6d8496082\n\
+        else\n  echo \"aws_security_group.rds not in state or already clean, skipping.\"\
+        \nfi\n"
       working-directory: infra
     - name: Terraform Apply
       run: terraform apply -input=false -auto-approve

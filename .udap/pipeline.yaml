@@ -16,7 +16,6 @@ stages:
       TF_VAR_db_password: ${{ secrets.DB_PASSWORD }}
     outputs:
       instance_ip: ${{ steps.tf_outputs.outputs.instance_ip }}
-      rds_endpoint_b64: ${{ steps.tf_outputs.outputs.rds_endpoint_b64 }}
     steps:
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
@@ -26,7 +25,7 @@ stages:
 
       - name: Terraform Init
         run: |
-          terraform init -reconfigure -input=false -reconfigure \
+          terraform init -input=false -reconfigure \
             -backend-config="bucket=${{ secrets.TF_STATE_BUCKET }}" \
             -backend-config="key=${{ secrets.PROJECT_NAME }}/terraform.tfstate" \
             -backend-config="region=us-east-1"
@@ -40,9 +39,14 @@ stages:
         id: tf_outputs
         run: |
           echo "instance_ip=$(terraform output -raw instance_ip)" >> "$GITHUB_OUTPUT"
-          RDS_RAW=$(terraform output -raw rds_endpoint)
-          echo "rds_endpoint_b64=$(echo -n "$RDS_RAW" | base64 -w 0)" >> "$GITHUB_OUTPUT"
+          terraform output -raw rds_endpoint > /tmp/rds_endpoint.txt
         working-directory: infra
+
+      - name: Upload RDS endpoint artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: tf-outputs
+          path: /tmp/rds_endpoint.txt
 
   - id: configure
     kind: configure
@@ -52,12 +56,24 @@ stages:
       - name: Install Ansible
         run: pip install ansible-core
 
+      - name: Download RDS endpoint artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: tf-outputs
+          path: /tmp
+
       - name: Write SSH Key
         env:
           SSH_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
         run: |
           mkdir -p ~/.ssh
-          printf '%s\n' "$SSH_KEY" > ~/.ssh/deploy_key
+          python3 -c "
+          import os, sys
+          key = os.environ['SSH_KEY'].replace('\\n', '\n')
+          if not key.endswith('\n'):
+              key += '\n'
+          open(os.path.expanduser('~/.ssh/deploy_key'), 'w').write(key)
+          "
           chmod 600 ~/.ssh/deploy_key
           ssh-keyscan -H "${{ needs.provision.outputs.instance_ip }}" >> ~/.ssh/known_hosts
 
@@ -68,18 +84,14 @@ stages:
           ${{ needs.provision.outputs.instance_ip }} ansible_user=${{ secrets.SSH_USER }} ansible_ssh_private_key_file=~/.ssh/deploy_key ansible_ssh_common_args='-o StrictHostKeyChecking=accept-new'
           EOF
 
-      - name: Decode RDS endpoint
-        id: rds
-        run: |
-          echo "rds_host=$(echo '${{ needs.provision.outputs.rds_endpoint_b64 }}' | base64 -d)" >> "$GITHUB_OUTPUT"
-
       - name: Run Ansible Playbook
         env:
           DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
           SECRET_KEY: ${{ secrets.SECRET_KEY }}
         run: |
+          RDS_HOST=$(cat /tmp/rds_endpoint.txt)
           ansible-playbook -i ansible/inventory.ini ansible/site.yml \
-            -e "db_host=${{ steps.rds.outputs.rds_host }}" \
+            -e "db_host=${RDS_HOST}" \
             -e "db_password=${{ secrets.DB_PASSWORD }}" \
             -e "secret_key=${{ secrets.SECRET_KEY }}" \
             -e "project_name=${{ secrets.PROJECT_NAME }}"

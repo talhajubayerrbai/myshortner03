@@ -1,0 +1,196 @@
+---
+- name: Configure URL shortener app server
+  hosts: app
+  become: true
+  gather_facts: true
+
+  vars:
+    app_dir: /opt/myshortner03
+    app_user: appuser
+    app_port: 8000
+    db_port: 5432
+    db_name: shortener
+    db_user: shortener
+
+  tasks:
+    # ── Wait for SSH ────────────────────────────────────────────────────────
+    - name: Wait for SSH to be ready
+      wait_for_connection:
+        timeout: 120
+
+    # ── System packages ────────────────────────────────────────────────────
+    - name: Install system packages
+      ansible.builtin.dnf:
+        name:
+          - python3
+          - python3-pip
+          - python3-devel
+          - gcc
+          - postgresql-devel
+          - nginx
+          - git
+        state: present
+        update_cache: true
+
+    # ── App user ───────────────────────────────────────────────────────────
+    - name: Create app user
+      ansible.builtin.user:
+        name: "{{ app_user }}"
+        shell: /bin/bash
+        system: true
+        create_home: true
+
+    # ── App directory ──────────────────────────────────────────────────────
+    - name: Create app directory
+      ansible.builtin.file:
+        path: "{{ app_dir }}"
+        state: directory
+        owner: "{{ app_user }}"
+        group: "{{ app_user }}"
+        mode: "0755"
+
+    # ── Copy app source ────────────────────────────────────────────────────
+    - name: Copy application source
+      ansible.builtin.copy:
+        src: "{{ playbook_dir }}/../"
+        dest: "{{ app_dir }}/"
+        owner: "{{ app_user }}"
+        group: "{{ app_user }}"
+        mode: preserve
+        directory_mode: "0755"
+
+    # ── Python virtual environment ─────────────────────────────────────────
+    - name: Create Python virtual environment
+      ansible.builtin.command:
+        cmd: python3 -m venv "{{ app_dir }}/venv"
+        creates: "{{ app_dir }}/venv/bin/python"
+      become_user: "{{ app_user }}"
+
+    - name: Install Python dependencies
+      ansible.builtin.pip:
+        requirements: "{{ app_dir }}/requirements.txt"
+        virtualenv: "{{ app_dir }}/venv"
+        virtualenv_python: python3
+      become_user: "{{ app_user }}"
+
+    # ── Environment file ───────────────────────────────────────────────────
+    - name: Write .env file
+      ansible.builtin.copy:
+        dest: "{{ app_dir }}/.env"
+        owner: "{{ app_user }}"
+        group: "{{ app_user }}"
+        mode: "0600"
+        content: |
+          DATABASE_URL=postgresql://{{ db_user }}:{{ db_password }}@{{ db_host }}:{{ db_port }}/{{ db_name }}
+          SECRET_KEY={{ secret_key }}
+          BASE_URL=http://{{ ansible_host }}
+      no_log: true
+
+    # ── Alembic migrations ─────────────────────────────────────────────────
+    - name: Run database migrations
+      ansible.builtin.command:
+        cmd: "{{ app_dir }}/venv/bin/alembic upgrade head"
+        chdir: "{{ app_dir }}"
+      environment:
+        DATABASE_URL: "postgresql://{{ db_user }}:{{ db_password }}@{{ db_host }}:{{ db_port }}/{{ db_name }}"
+      become_user: "{{ app_user }}"
+      no_log: true
+
+    # ── Systemd service ────────────────────────────────────────────────────
+    - name: Write systemd service unit
+      ansible.builtin.copy:
+        dest: /etc/systemd/system/myshortner03.service
+        mode: "0644"
+        content: |
+          [Unit]
+          Description=myshortner03 URL Shortener
+          After=network.target
+
+          [Service]
+          Type=simple
+          User={{ app_user }}
+          WorkingDirectory={{ app_dir }}
+          EnvironmentFile={{ app_dir }}/.env
+          ExecStart={{ app_dir }}/venv/bin/gunicorn app.main:app \
+            -k uvicorn.workers.UvicornWorker \
+            -w 2 \
+            -b 127.0.0.1:{{ app_port }} \
+            --timeout 60 \
+            --access-logfile - \
+            --error-logfile -
+          Restart=always
+          RestartSec=5
+
+          [Install]
+          WantedBy=multi-user.target
+      notify: Restart app
+
+    - name: Enable and start app service
+      ansible.builtin.systemd:
+        name: myshortner03
+        enabled: true
+        state: started
+        daemon_reload: true
+
+    # ── Nginx ──────────────────────────────────────────────────────────────
+    - name: Remove default nginx site
+      ansible.builtin.file:
+        path: /etc/nginx/conf.d/default.conf
+        state: absent
+      notify: Reload nginx
+
+    - name: Write nginx virtual host config
+      ansible.builtin.copy:
+        dest: /etc/nginx/conf.d/myshortner03.conf
+        mode: "0644"
+        content: |
+          server {
+              listen 80 default_server;
+              server_name _;
+
+              client_max_body_size 1m;
+
+              location / {
+                  proxy_pass         http://127.0.0.1:{{ app_port }};
+                  proxy_set_header   Host              $host;
+                  proxy_set_header   X-Real-IP         $remote_addr;
+                  proxy_set_header   X-Forwarded-For   $proxy_add_x_forwarded_for;
+                  proxy_set_header   X-Forwarded-Proto $scheme;
+                  proxy_read_timeout 60s;
+              }
+          }
+      notify: Reload nginx
+
+    - name: Validate nginx config
+      ansible.builtin.command:
+        cmd: nginx -t
+      changed_when: false
+
+    - name: Enable and start nginx
+      ansible.builtin.systemd:
+        name: nginx
+        enabled: true
+        state: started
+
+    # ── Flush handlers so services are up before the play ends ────────────
+    - name: Flush handlers
+      ansible.builtin.meta: flush_handlers
+
+    # ── Wait for app to be listening ───────────────────────────────────────
+    - name: Wait for app port
+      ansible.builtin.wait_for:
+        port: "{{ app_port }}"
+        host: 127.0.0.1
+        timeout: 60
+
+  handlers:
+    - name: Restart app
+      ansible.builtin.systemd:
+        name: myshortner03
+        state: restarted
+        daemon_reload: true
+
+    - name: Reload nginx
+      ansible.builtin.systemd:
+        name: nginx
+        state: reloaded

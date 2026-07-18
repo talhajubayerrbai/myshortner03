@@ -25,7 +25,7 @@ stages:
 
       - name: Terraform Init
         run: |
-          terraform init -reconfigure -input=false -reconfigure \
+          terraform init -input=false -reconfigure \
             -backend-config="bucket=${{ secrets.TF_STATE_BUCKET }}" \
             -backend-config="key=${{ secrets.PROJECT_NAME }}/terraform.tfstate" \
             -backend-config="region=us-east-1"
@@ -41,7 +41,7 @@ stages:
 
       - name: Export Outputs
         id: tf_outputs
-        run: |
+        run: |  
           echo "instance_ip=$(terraform output -raw instance_ip)" >> "$GITHUB_OUTPUT"
           terraform output -raw rds_endpoint > /tmp/rds_endpoint.txt
         working-directory: infra

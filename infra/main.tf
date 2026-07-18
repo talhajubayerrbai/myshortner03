@@ -137,18 +137,14 @@ resource "aws_db_instance" "postgres" {
 }
 
 # -- EC2 Instance -------------------------------------------------------------
+# NOTE: No lifecycle replace_triggered_by here — we use explicit -replace flags
+# in the pipeline for the key pair + instance so the RDS SG is never touched.
 resource "aws_instance" "app" {
   ami                    = data.aws_ami.amazon_linux.id
   instance_type          = var.instance_type
   key_name               = aws_key_pair.app.key_name
   subnet_id              = tolist(data.aws_subnets.default.ids)[0]
   vpc_security_group_ids = [aws_security_group.app.id]
-
-  # Replace this instance whenever the key pair is replaced,
-  # ensuring cloud-init re-seeds authorized_keys from the new public key.
-  lifecycle {
-    replace_triggered_by = [aws_key_pair.app]
-  }
 
   tags = {
     Name      = "${var.project_name}-app"

@@ -16,7 +16,7 @@ stages:
       TF_VAR_db_password: ${{ secrets.DB_PASSWORD }}
     outputs:
       instance_ip: ${{ steps.tf_outputs.outputs.instance_ip }}
-      rds_endpoint: ${{ steps.tf_outputs.outputs.rds_endpoint }}
+      rds_endpoint_b64: ${{ steps.tf_outputs.outputs.rds_endpoint_b64 }}
     steps:
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
@@ -26,7 +26,7 @@ stages:
 
       - name: Terraform Init
         run: |
-          terraform init -reconfigure -input=false -reconfigure \
+          terraform init -input=false -reconfigure \
             -backend-config="bucket=${{ secrets.TF_STATE_BUCKET }}" \
             -backend-config="key=${{ secrets.PROJECT_NAME }}/terraform.tfstate" \
             -backend-config="region=us-east-1"
@@ -40,7 +40,8 @@ stages:
         id: tf_outputs
         run: |
           echo "instance_ip=$(terraform output -raw instance_ip)" >> "$GITHUB_OUTPUT"
-          echo "rds_endpoint=$(terraform output -raw rds_endpoint)" >> "$GITHUB_OUTPUT"
+          RDS_RAW=$(terraform output -raw rds_endpoint)
+          echo "rds_endpoint_b64=$(echo -n "$RDS_RAW" | base64 -w 0)" >> "$GITHUB_OUTPUT"
         working-directory: infra
 
   - id: configure
@@ -64,18 +65,21 @@ stages:
         run: |
           cat > ansible/inventory.ini <<EOF
           [app]
-          ${{ needs.provision.outputs.instance_ip }} ansible_user=${{ secrets.SSH_USER }} ansible_ssh_private_key_file=~/.ssh/deploy_key
+          ${{ needs.provision.outputs.instance_ip }} ansible_user=${{ secrets.SSH_USER }} ansible_ssh_private_key_file=~/.ssh/deploy_key ansible_ssh_common_args='-o StrictHostKeyChecking=accept-new'
           EOF
+
+      - name: Decode RDS endpoint
+        id: rds
+        run: |
+          echo "rds_host=$(echo '${{ needs.provision.outputs.rds_endpoint_b64 }}' | base64 -d)" >> "$GITHUB_OUTPUT"
 
       - name: Run Ansible Playbook
         env:
-          DB_HOST: ${{ needs.provision.outputs.rds_endpoint }}
           DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
           SECRET_KEY: ${{ secrets.SECRET_KEY }}
-          PROJECT_NAME: ${{ secrets.PROJECT_NAME }}
         run: |
           ansible-playbook -i ansible/inventory.ini ansible/site.yml \
-            -e "db_host=${{ needs.provision.outputs.rds_endpoint }}" \
+            -e "db_host=${{ steps.rds.outputs.rds_host }}" \
             -e "db_password=${{ secrets.DB_PASSWORD }}" \
             -e "secret_key=${{ secrets.SECRET_KEY }}" \
             -e "project_name=${{ secrets.PROJECT_NAME }}"

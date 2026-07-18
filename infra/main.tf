@@ -25,10 +25,28 @@ data "aws_ami" "amazon_linux" {
   }
 }
 
+# Look up the existing RDS SG by name — do NOT manage it as a resource.
+# It was created in an earlier run and is attached to the live RDS instance;
+# converting it to a data source makes Terraform read-only so it is never destroyed.
+data "aws_security_group" "rds" {
+  filter {
+    name   = "group-name"
+    values = ["${var.project_name}-rds-sg"]
+  }
+  filter {
+    name   = "vpc-id"
+    values = [data.aws_vpc.default.id]
+  }
+}
+
 # -- SSH Key Pair --------------------------------------------------------------
 resource "aws_key_pair" "app" {
   key_name   = "${var.project_name}-key"
   public_key = var.ssh_public_key
+
+  lifecycle {
+    ignore_changes = [public_key]
+  }
 
   tags = {
     Project   = var.project_name
@@ -65,30 +83,8 @@ resource "aws_security_group" "app" {
     cidr_blocks = ["0.0.0.0/0"]
   }
 
-  tags = {
-    Project   = var.project_name
-    ManagedBy = "udap"
-  }
-}
-
-resource "aws_security_group" "rds" {
-  name        = "${var.project_name}-rds-sg"
-  description = "RDS security group - allows Postgres from app SG only"
-  vpc_id      = data.aws_vpc.default.id
-
-  ingress {
-    description     = "Postgres from app"
-    from_port       = 5432
-    to_port         = 5432
-    protocol        = "tcp"
-    security_groups = [aws_security_group.app.id]
-  }
-
-  egress {
-    from_port   = 0
-    to_port     = 0
-    protocol    = "-1"
-    cidr_blocks = ["0.0.0.0/0"]
+  lifecycle {
+    ignore_changes = [ingress, egress]
   }
 
   tags = {
@@ -122,13 +118,17 @@ resource "aws_db_instance" "postgres" {
   password = var.db_password
 
   db_subnet_group_name   = aws_db_subnet_group.main.name
-  vpc_security_group_ids = [aws_security_group.rds.id]
+  vpc_security_group_ids = [data.aws_security_group.rds.id]
 
   publicly_accessible     = false
   skip_final_snapshot     = true
   deletion_protection     = false
   backup_retention_period = 0
   multi_az                = false
+
+  lifecycle {
+    ignore_changes = [vpc_security_group_ids, password]
+  }
 
   tags = {
     Project   = var.project_name
@@ -137,8 +137,6 @@ resource "aws_db_instance" "postgres" {
 }
 
 # -- EC2 Instance -------------------------------------------------------------
-# NOTE: No lifecycle replace_triggered_by here — we use explicit -replace flags
-# in the pipeline for the key pair + instance so the RDS SG is never touched.
 resource "aws_instance" "app" {
   ami                    = data.aws_ami.amazon_linux.id
   instance_type          = var.instance_type

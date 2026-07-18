@@ -25,30 +25,17 @@ stages:
 
       - name: Terraform Init
         run: |
-          terraform init -reconfigure -input=false -reconfigure \
+          terraform init -input=false -reconfigure \
             -backend-config="bucket=${{ secrets.TF_STATE_BUCKET }}" \
             -backend-config="key=${{ secrets.PROJECT_NAME }}/terraform.tfstate" \
             -backend-config="region=us-east-1"
         working-directory: infra
 
-      - name: Reconcile RDS SG state
-        env:
-          TF_VAR_project_name: ${{ secrets.PROJECT_NAME }}
-          TF_VAR_ssh_public_key: ${{ secrets.SSH_PUBLIC_KEY }}
-          TF_VAR_db_password: ${{ secrets.DB_PASSWORD }}
+      - name: Drop stale RDS SG resource from state
         run: |
-          set -e
-          # If the RDS SG is in state but flagged dirty, remove and re-import
-          # so Terraform sees it as-is and makes zero changes to it.
-          if terraform state show aws_security_group.rds > /dev/null 2>&1; then
-            echo "RDS SG found in state — removing stale entry..."
-            terraform state rm aws_security_group.rds
-            echo "Re-importing sg-017966ea6d8496082 so Terraform reconciles in-place..."
-            terraform import -input=false aws_security_group.rds sg-017966ea6d8496082
-            echo "Import complete."
-          else
-            echo "aws_security_group.rds not in state — will be created fresh by apply."
-          fi
+          # Remove the old managed resource entry if present — it is now a data source.
+          # This is a no-op if the entry is already gone.
+          terraform state rm aws_security_group.rds 2>/dev/null || true
         working-directory: infra
 
       - name: Terraform Apply

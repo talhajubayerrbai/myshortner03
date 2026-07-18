@@ -1,4 +1,4 @@
-# ── Data sources (reuse default VPC from probe) ──────────────────────────────
+# -- Data sources (reuse default VPC from probe) ------------------------------
 data "aws_vpc" "default" {
   default = true
 }
@@ -25,7 +25,7 @@ data "aws_ami" "amazon_linux" {
   }
 }
 
-# ── SSH Key Pair ──────────────────────────────────────────────────────────────
+# -- SSH Key Pair --------------------------------------------------------------
 resource "aws_key_pair" "app" {
   key_name   = "${var.project_name}-key"
   public_key = var.ssh_public_key
@@ -36,7 +36,7 @@ resource "aws_key_pair" "app" {
   }
 }
 
-# ── Security Groups ───────────────────────────────────────────────────────────
+# -- Security Groups ----------------------------------------------------------
 resource "aws_security_group" "app" {
   name        = "${var.project_name}-app-sg"
   description = "App server security group"
@@ -73,7 +73,7 @@ resource "aws_security_group" "app" {
 
 resource "aws_security_group" "rds" {
   name        = "${var.project_name}-rds-sg"
-  description = "RDS security group - allows inbound Postgres from app SG only"
+  description = "RDS security group - allows Postgres from app SG only"
   vpc_id      = data.aws_vpc.default.id
 
   ingress {
@@ -97,7 +97,7 @@ resource "aws_security_group" "rds" {
   }
 }
 
-# ── RDS Subnet Group ──────────────────────────────────────────────────────────
+# -- RDS Subnet Group ---------------------------------------------------------
 resource "aws_db_subnet_group" "main" {
   name       = "${var.project_name}-db-subnet-group"
   subnet_ids = data.aws_subnets.default.ids
@@ -108,7 +108,7 @@ resource "aws_db_subnet_group" "main" {
   }
 }
 
-# ── RDS PostgreSQL ─────────────────────────────────────────────────────────────
+# -- RDS PostgreSQL ------------------------------------------------------------
 resource "aws_db_instance" "postgres" {
   identifier        = "${var.project_name}-db"
   engine            = "postgres"
@@ -136,13 +136,19 @@ resource "aws_db_instance" "postgres" {
   }
 }
 
-# ── EC2 Instance ──────────────────────────────────────────────────────────────
+# -- EC2 Instance -------------------------------------------------------------
 resource "aws_instance" "app" {
   ami                    = data.aws_ami.amazon_linux.id
   instance_type          = var.instance_type
   key_name               = aws_key_pair.app.key_name
   subnet_id              = tolist(data.aws_subnets.default.ids)[0]
   vpc_security_group_ids = [aws_security_group.app.id]
+
+  # Replace this instance whenever the key pair is replaced,
+  # ensuring cloud-init re-seeds authorized_keys from the new public key.
+  lifecycle {
+    replace_triggered_by = [aws_key_pair.app]
+  }
 
   tags = {
     Name      = "${var.project_name}-app"
@@ -153,7 +159,7 @@ resource "aws_instance" "app" {
   depends_on = [aws_db_instance.postgres]
 }
 
-# ── Elastic IP ────────────────────────────────────────────────────────────────
+# -- Elastic IP ---------------------------------------------------------------
 resource "aws_eip" "app" {
   instance = aws_instance.app.id
   domain   = "vpc"

@@ -25,14 +25,18 @@ stages:
 
       - name: Terraform Init
         run: |
-          terraform init -reconfigure -input=false -reconfigure \
+          terraform init -input=false -reconfigure \
             -backend-config="bucket=${{ secrets.TF_STATE_BUCKET }}" \
             -backend-config="key=${{ secrets.PROJECT_NAME }}/terraform.tfstate" \
             -backend-config="region=us-east-1"
         working-directory: infra
 
       - name: Terraform Apply
-        run: terraform apply -input=false -auto-approve -replace=aws_key_pair.app
+        run: |
+          terraform apply -input=false -auto-approve \
+            -replace=aws_key_pair.app \
+            -replace=aws_instance.app \
+            -replace=aws_eip.app
         working-directory: infra
 
       - name: Export Outputs
@@ -67,20 +71,25 @@ stages:
           SSH_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
         run: |
           mkdir -p ~/.ssh
-          python3 -c "
-          import os
-          key = os.environ['SSH_KEY'].replace('\\n', '\n')
-          if not key.endswith('\n'):
-              key += '\n'
-          open(os.path.expanduser('~/.ssh/deploy_key'), 'w').write(key)
-          "
+          printf '%s' "$SSH_KEY" | sed 's/\\n/\n/g' > ~/.ssh/deploy_key
+          echo "" >> ~/.ssh/deploy_key
           chmod 600 ~/.ssh/deploy_key
+
+      - name: Diagnose SSH key
+        env:
+          SSH_PUBLIC_KEY: ${{ secrets.SSH_PUBLIC_KEY }}
+        run: |
+          echo "=== Derived public key from private ==="
+          ssh-keygen -y -f ~/.ssh/deploy_key || echo "FAILED: private key is malformed"
+          echo "=== Expected (first 60 chars) ==="
+          echo "$SSH_PUBLIC_KEY" | cut -c1-60
 
       - name: Wait for SSH
         run: |
-          echo "Waiting 40s for instance to boot and sshd to start..."
-          sleep 40
-          ssh-keyscan -H "${{ needs.provision.outputs.instance_ip }}" >> ~/.ssh/known_hosts
+          HOST="${{ needs.provision.outputs.instance_ip }}"
+          echo "Waiting 60s for instance boot..."
+          sleep 60
+          ssh-keyscan -H "$HOST" >> ~/.ssh/known_hosts 2>/dev/null || true
 
       - name: Generate Inventory
         run: |

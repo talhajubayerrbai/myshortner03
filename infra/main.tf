@@ -80,6 +80,13 @@ resource "aws_security_group" "app" {
     cidr_blocks = ["0.0.0.0/0"]
   }
 
+  # revoke_rules_on_delete ensures the AWS provider strips any cross-SG rules
+  # that reference this SG (e.g. an inbound rule on the RDS SG that allows
+  # traffic from this SG as a source) before attempting to delete it.
+  # Without this flag, AWS returns DependencyViolation when the externally-
+  # managed RDS SG still has such a rule, causing destroy to hang then fail.
+  revoke_rules_on_delete = true
+
   lifecycle {
     ignore_changes = [ingress, egress]
   }

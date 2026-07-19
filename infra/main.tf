@@ -83,23 +83,64 @@ resource "aws_security_group" "app" {
   # revoke_rules_on_delete strips inline ingress/egress rules owned BY this SG
   # before the DeleteSecurityGroup call. It does NOT revoke cross-SG rules on
   # other groups (e.g. the RDS SG) that reference this SG as a source; those
-  # are handled by aws_security_group_rule.rds_from_app being destroyed first
-  # (implicit ordering: that rule depends on this SG, so during destroy the
-  # rule is destroyed before the SG).
+  # are handled explicitly in the destroy-time provisioner below.
   revoke_rules_on_delete = true
 
-  # Destroy-time provisioner: poll until all ENIs still associated with this SG
-  # have detached. EC2 instance termination is asynchronous — the ENI can
-  # remain "in-use" for up to ~60 s after the instance reaches "terminated",
-  # and AWS returns DependencyViolation if DeleteSecurityGroup is called while
-  # any ENI still references it. Polling here avoids the 15-minute retry
-  # loop + failure that occurs when Terraform immediately issues the delete.
+  # Destroy-time provisioner:
+  # Step 1 — Revoke any cross-SG references to this SG that exist on OTHER
+  #   security groups (specifically the RDS SG ingress rule added by
+  #   aws_security_group_rule.rds_from_app). AWS returns DependencyViolation
+  #   if DeleteSecurityGroup is called while any other SG still lists this SG
+  #   as a source in one of its rules. Terraform's implicit dependency ordering
+  #   should destroy aws_security_group_rule.rds_from_app first, but if the
+  #   rule is absent from state (e.g. first destroy after the rule was added
+  #   without a fresh apply, or a partial state) Terraform skips it and the
+  #   rule remains in AWS — causing the 15-minute retry loop + failure.
+  #   This step makes the provisioner idempotent: it detects and removes any
+  #   remaining cross-SG references regardless of Terraform state.
+  # Step 2 — Poll until all ENIs still associated with this SG have detached.
+  #   EC2 instance termination is asynchronous — the ENI can remain "in-use"
+  #   for up to ~60 s after the instance reaches "terminated".
   provisioner "local-exec" {
     when        = destroy
     interpreter = ["/bin/bash", "-c"]
     command     = <<-EOT
       SG_ID="${self.id}"
-      echo "Waiting for ENIs attached to $SG_ID to detach..."
+
+      echo "=== Step 1: Revoke cross-SG references to $SG_ID from other security groups ==="
+      REFS=$(aws ec2 describe-security-groups \
+        --filters "Name=ip-permission.group-id,Values=$SG_ID" \
+        --query 'SecurityGroups[*].{GroupId:GroupId,Permissions:IpPermissions}' \
+        --output json 2>/dev/null || echo '[]')
+
+      echo "$REFS" | python3 -c "
+import json, sys, subprocess
+groups = json.load(sys.stdin)
+for g in groups:
+    gid = g['GroupId']
+    perms_to_revoke = []
+    for perm in g.get('Permissions', []):
+        user_pairs = [p for p in perm.get('UserIdGroupPairs', []) if p.get('GroupId') == '$SG_ID']
+        if user_pairs:
+            perms_to_revoke.append({
+                'IpProtocol': perm['IpProtocol'],
+                'FromPort': perm.get('FromPort', 0),
+                'ToPort': perm.get('ToPort', 0),
+                'UserIdGroupPairs': user_pairs
+            })
+    if perms_to_revoke:
+        print(f'Revoking {len(perms_to_revoke)} rule(s) from SG {gid} that reference $SG_ID')
+        cmd = ['aws', 'ec2', 'revoke-security-group-ingress',
+               '--group-id', gid,
+               '--ip-permissions', json.dumps(perms_to_revoke)]
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        if result.returncode != 0:
+            print(f'Warning: revoke failed for {gid}: {result.stderr}')
+        else:
+            print(f'Successfully revoked rules from {gid}')
+"
+
+      echo "=== Step 2: Wait for ENIs attached to $SG_ID to detach ==="
       for i in $(seq 1 30); do
         COUNT=$(aws ec2 describe-network-interfaces \
           --filters "Name=group-id,Values=$SG_ID" "Name=status,Values=in-use" \
@@ -129,7 +170,11 @@ resource "aws_security_group" "app" {
 # Explicitly manage the RDS SG ingress rule that allows the app SG to reach
 # PostgreSQL. By owning this rule in Terraform, it is destroyed BEFORE
 # aws_security_group.app is deleted, eliminating the DependencyViolation that
-# occurs when the external RDS SG still references the app SG at destroy time.
+# occurs when the external RDS SG still references the app SG as a source.
+# The destroy-time provisioner on aws_security_group.app provides a second
+# layer of defence: it revokes any remaining cross-SG references via AWS CLI
+# before the DeleteSecurityGroup API call is made, handling cases where this
+# rule is absent from Terraform state.
 resource "aws_security_group_rule" "rds_from_app" {
   type                     = "ingress"
   from_port                = 5432

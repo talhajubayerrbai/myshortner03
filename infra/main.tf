@@ -80,12 +80,41 @@ resource "aws_security_group" "app" {
     cidr_blocks = ["0.0.0.0/0"]
   }
 
-  # revoke_rules_on_delete ensures the AWS provider strips any cross-SG rules
-  # that reference this SG (e.g. an inbound rule on the RDS SG that allows
-  # traffic from this SG as a source) before attempting to delete it.
-  # Without this flag, AWS returns DependencyViolation when the externally-
-  # managed RDS SG still has such a rule, causing destroy to hang then fail.
+  # revoke_rules_on_delete strips inline ingress/egress rules owned BY this SG
+  # before the DeleteSecurityGroup call. It does NOT revoke cross-SG rules on
+  # other groups (e.g. the RDS SG) that reference this SG as a source; those
+  # are handled by aws_security_group_rule.rds_from_app being destroyed first
+  # (implicit ordering: that rule depends on this SG, so during destroy the
+  # rule is destroyed before the SG).
   revoke_rules_on_delete = true
+
+  # Destroy-time provisioner: poll until all ENIs still associated with this SG
+  # have detached. EC2 instance termination is asynchronous — the ENI can
+  # remain "in-use" for up to ~60 s after the instance reaches "terminated",
+  # and AWS returns DependencyViolation if DeleteSecurityGroup is called while
+  # any ENI still references it. Polling here avoids the 15-minute retry
+  # loop + failure that occurs when Terraform immediately issues the delete.
+  provisioner "local-exec" {
+    when        = destroy
+    interpreter = ["/bin/bash", "-c"]
+    command     = <<-EOT
+      SG_ID="${self.id}"
+      echo "Waiting for ENIs attached to $SG_ID to detach..."
+      for i in $(seq 1 30); do
+        COUNT=$(aws ec2 describe-network-interfaces \
+          --filters "Name=group-id,Values=$SG_ID" "Name=status,Values=in-use" \
+          --query 'length(NetworkInterfaces)' \
+          --output text 2>/dev/null || echo "0")
+        if [ "$COUNT" = "0" ] || [ "$COUNT" = "None" ]; then
+          echo "No in-use ENIs remaining after $((i * 10 - 10))s. Proceeding with SG deletion."
+          exit 0
+        fi
+        echo "Attempt $i/30: $COUNT ENI(s) still in-use, sleeping 10s..."
+        sleep 10
+      done
+      echo "Timed out waiting for ENIs to detach — proceeding anyway."
+    EOT
+  }
 
   lifecycle {
     ignore_changes = [ingress, egress]

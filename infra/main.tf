@@ -97,6 +97,20 @@ resource "aws_security_group" "app" {
   }
 }
 
+# Explicitly manage the RDS SG ingress rule that allows the app SG to reach
+# PostgreSQL. By owning this rule in Terraform, it is destroyed BEFORE
+# aws_security_group.app is deleted, eliminating the DependencyViolation that
+# occurs when the external RDS SG still references the app SG at destroy time.
+resource "aws_security_group_rule" "rds_from_app" {
+  type                     = "ingress"
+  from_port                = 5432
+  to_port                  = 5432
+  protocol                 = "tcp"
+  security_group_id        = data.aws_security_group.rds.id
+  source_security_group_id = aws_security_group.app.id
+  description              = "Allow app SG to reach PostgreSQL"
+}
+
 # -- RDS Subnet Group ---------------------------------------------------------
 resource "aws_db_subnet_group" "main" {
   name       = "${var.project_name}-db-subnet-group"
